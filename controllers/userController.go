@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/Arcer23/jwt-go-gin-mongodb/database"
-	"github.com/Arcer23/jwt-go-gin-mongodb/helpers"
 	helper "github.com/Arcer23/jwt-go-gin-mongodb/helpers"
 	"github.com/Arcer23/jwt-go-gin-mongodb/models"
 	"github.com/gin-gonic/gin"
@@ -25,11 +24,11 @@ var UserCollection *mongo.Collection = database.OpenCollection(database.Client, 
 var validate = validator.New()
 
 func HashPassword(password string) string {
-	err := bcrypt.GenerateFromPassword([]byte(password), 14)
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), 14)
 	if err != nil {
 		log.Panic(err)
 	}
-	return string(bytes)
+	return string(hashedPassword)
 }
 func VerifyPassword(userPassword string, providedPassword string) (bool, string) {
 	err := bcrypt.CompareHashAndPassword([]byte(providedPassword), []byte(userPassword))
@@ -119,7 +118,7 @@ func Login() gin.HandlerFunc {
 			return
 		}
 
-		if foundUser.Email == nil {
+		if foundUser.Email == "" {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "usernotfound"})
 			return
 		}
@@ -136,40 +135,49 @@ func Login() gin.HandlerFunc {
 func GetUsers() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if err := helper.CheckUserType(c, "ADMIN"); err != nil {
-			c.JSON(http.StatusBadRequest,gin.H{"error":
-		err.Error()})
-		return
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
 		}
-		var ctx , cancel = context.WithTimeout(context.Background(), 100*time.Second);
+		var ctx, cancel = context.WithTimeout(context.Background(), 100*time.Second)
 
-		recordPerPage, err  := strconv.Atoi(c.Query("recordPerPage"))
-		if err != nil || recordPerPage < 1{
+		recordPerPage, err := strconv.Atoi(c.Query("recordPerPage"))
+		if err != nil || recordPerPage < 1 {
 			recordPerPage = 10
 		}
-		page , err1 := strconv.Atoi(c.Query("page"));
+		page, err1 := strconv.Atoi(c.Query("page"))
 		if err1 != nil || page < 1 {
-			page =1 
+			page = 1
 		}
-		startIndex := (page-1) * recordPerPage
-		startIndex, err = strconv.Atoi(c.Query("startIndex"));
+		startIndex := (page - 1) * recordPerPage
+		startIndex, err = strconv.Atoi(c.Query("startIndex"))
 
-		matchStage := bson.D{{Key: "$match", Value: bson.D{}}}
-		groupStage := bson.D{{Key: "$group", Value: bson.D{{Key: "_id", Value: nil}}}}
+		matchStage := bson.D{{"$match", bson.D{}}}
+		groupStage := bson.D{{"$group", bson.D{
+			{"_id", bson.D{{"_id", "null"}}},
+			{"total_count", bson.D{{"$sum", 1}}},
+			{"data", bson.D{{"$push", "$$ROOT"}}},
+		}}}
 
-		// Example usage of matchStage and groupStage to avoid "declared and not used" errors
-		cursor, err := UserCollection.Aggregate(ctx, mongo.Pipeline{matchStage, groupStage})
+		projectStage:=bson.D{
+			{"$project", bson.D{
+				{"_id" , 0},
+				{"total_count ",1},
+				{"users_items", bson.D{{"$slice", []interface{}{"$data",startIndex}}}},
+			}},
+		}
+		result , err := UserCollection.Aggregate(ctx , mongo.Pipeline{
+			matchStage, groupStage, projectStage,
+		})
+		defer cancel()
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "error occurred while fetching data"})
-			defer cancel()
+			c.JSON(http.StatusInternalServerError , gin.H{"error":err.Error()})
 			return
 		}
-		var results []bson.M
-		if err = cursor.All(ctx, &results); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "error occurred while decoding data"})
-			defer cancel()
-			return
+		var allUsers []bson.M
+		if err = result.All(ctx, &allUsers); err != nil {
+			log.Fatal(err)
 		}
-		c.JSON(http.StatusOK, results)
+		c.JSON(http.StatusOK, allUsers[0])
 	}
 }
 func GetUser() gin.HandlerFunc {
